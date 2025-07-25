@@ -1,0 +1,269 @@
+# Untitled notebook
+
+## Section
+
+```elixir
+defmodule Pars do
+  def parseline (linestring) do
+    [datetime , type , val ,id ,name, coords] = linestring |> String.split(";")
+
+    %{:name => name,
+      :val => val |> String.to_float(),
+      :id => String.to_integer(id),
+      :coords => coords
+      |> String.split(",")
+      |> Enum.map(&String.to_float()/1)
+      |> List.to_tuple(),
+      :type => type,
+      :datetime => parse_datetime(datetime),
+    }
+  end
+  
+  def identify_stations (data) do
+    Enum.uniq_by(data, & &1.id)
+  end
+  
+  defp parse_datetime(datetime) do
+  [date_str , time_str_with_z] = String.split(datetime, "T")
+  time_str = String.replace(time_str_with_z , "Z","") |> String.split(".") |> hd()
+  [year,mounth , day] = date_str |> String.split("-") |> Enum.map(&String.to_integer/1)
+  [hour ,minute,secound] = time_str |> String.split(":") |> Enum.map(&String.to_integer/1)
+  {{year,mounth,day},{hour,minute,secound}}
+  end
+end
+
+data = File.read!("/home/paranoidppl/Studia/Semestr4/Erlang-Elixir-Course/AirlyData-ALL-50k.csv")
+|> String.trim()
+|> String.split("\n")
+|>Enum.map(&Pars.parseline/1)
+
+unique_stations = Pars.identify_stations(data)
+
+
+```
+
+```elixir
+# After `data = File.read! ... |> Enum.map(&Pars.parseline/1)`
+
+target_elixir_type = "PM25"
+target_elixir_date = {2024, 2, 10}
+
+IO.puts("--- Debugging PM25 for #{inspect(target_elixir_date)} (Elixir side before sending to Erlang) ---")
+
+relevant_parsed_readings = Enum.filter(data, fn r ->
+  r.type == target_elixir_type && elem(r.datetime, 0) == target_elixir_date
+end)
+
+if Enum.empty?(relevant_parsed_readings) do
+  IO.puts("No PM25 readings found in parsed Elixir data for #{inspect(target_elixir_date)}.")
+else
+  IO.puts("Found #{Enum.count(relevant_parsed_readings)} PM25 readings in Elixir data for #{inspect(target_elixir_date)}:")
+  pm25_values = Enum.map(relevant_parsed_readings, & &1.val)
+  IO.inspect(pm25_values, label: "Values")
+  if Enum.any?(pm25_values) do
+    mean_val = Enum.sum(pm25_values) / Enum.count(pm25_values)
+    IO.puts("Expected mean from Elixir parsed data: #{mean_val}")
+  end
+end
+IO.puts("--- End Elixir-side Debug ---")
+```
+
+```elixir
+# ... after `data = File.read! ... |> Enum.map(&Pars.parseline/1)`
+
+target_elixir_station_id_int = 9910
+# Ensure this string exactly matches how it's constructed and queried
+expected_station_name_query = "9910 Polska, Kraków, Studencka" 
+
+IO.puts("--- Debugging Station: #{expected_station_name_query} ---")
+
+# Find data that would form this station name
+relevant_parsed_data = Enum.filter(data, fn r ->
+  constructed_name = "#{r.id} #{r.name}"
+  r.id == target_elixir_station_id_int && constructed_name == expected_station_name_query
+end)
+
+if Enum.empty?(relevant_parsed_data) do
+  IO.puts("No data parsed that would form station name: #{expected_station_name_query}")
+else
+  IO.puts("Parsed data entries for station '#{expected_station_name_query}':")
+  Enum.each(relevant_parsed_data, &IO.inspect/1)
+
+  pm10_values =
+    relevant_parsed_data
+    |> Enum.filter(&(&1.type == "PM10"))
+    |> Enum.map(& &1.val)
+
+  IO.puts("PM10 values from parsed Elixir data for this station: #{inspect(pm10_values)}")
+  if Enum.any?(pm10_values) do
+    IO.puts("Min PM10 value from parsed Elixir data: #{Enum.min(pm10_values)}")
+  else
+    IO.puts("No PM10 values found in parsed Elixir data for this station.")
+  end
+end
+IO.puts("--- End Debugging Station ---")
+
+# ... rest of your script (Application.stop/start, insert_stations, etc.)
+```
+
+```elixir
+Code.append_path("/home/paranoidppl/Studia/Semestr4/Erlang-Elixir-Course/myapp/_build/default/lib/myapp/ebin")
+
+Application.stop(:myapp)
+Application.start(:myapp)
+
+insert_stations = fn ->
+  for station <- unique_stations do
+    name = "#{station.id} #{station.name}"
+    coord = station.coords
+    :pollution_gen_server.add_station(name, coord)
+  end
+end
+
+load_pm10 = fn ->
+  Enum.each(data, fn reading ->
+      if reading.type == "PM25" do
+        name = "#{reading.id} #{reading.name}"
+        :pollution_gen_server.add_value(name, reading.datetime, "PM25", reading.val)
+      end
+    end)
+end
+
+
+
+load_stations_microseconds = insert_stations |> :timer.tc() |> elem(0)
+load_stations_secounds = load_stations_microseconds / 1_000_000
+IO.puts("Czas ladowania stacji #{load_stations_secounds}")
+
+load_time_microseconds = load_pm10 |> :timer.tc() |> elem(0)
+load_time_seconds = load_time_microseconds / 1_000_000
+IO.puts("Czas ladowania danych #{load_time_seconds}")
+
+```
+
+```elixir
+
+```
+
+```elixir
+:pollution_gen_server.get_daily_average_data_count({{2024, 2, 10}, {15, 0, 0}})
+```
+
+```elixir
+:pollution_gen_server.get_station_min("9910 Polska, Kraków, Studencka","PM10") 
+{execution_time_microseconds, result} = :timer.tc(fn -> 
+  :pollution_gen_server.get_station_min("9910 Polska, Kraków, Studencka", "PM10")
+end)
+
+execution_time_seconds = execution_time_microseconds / 1_000_000
+
+
+
+```
+
+```elixir
+:pollution_gen_server.get_daily_mean("PM25",{2024, 2, 10})
+# :pollution_gen_server.get_daily_mean("9910 Polska, Kraków, Studencka","PM10") 
+# {execution_time_microseconds, result} = :timer.tc(fn -> 
+  # :pollution_gen_server.get_daily_mean("9910 Polska, Kraków, Studencka", "PM10")
+# end)
+
+# execution_time_seconds = execution_time_microseconds / 1_000_000
+```
+
+```elixir
+defmodule Parse do
+  def parseline (linestring) do
+    [datetime , type , val ,id ,name, coords] = linestring |> String.split(";")
+
+    {date,time} = parse_datetime(datetime)
+    %{:name => name,
+      :val => val |> String.to_float(),
+      :id => String.to_integer(id),
+      :coords => coords
+      |> String.split(",")
+      |> Enum.map(&String.to_float()/1)
+      |> List.to_tuple(),
+      :type => type,
+      :date => date,
+      :time => time
+    }
+  end
+  
+  def identify_stations (data) do
+    Enum.uniq_by(data, & &1.id)
+  end
+  
+  defp parse_datetime(datetime) do
+  [date_str , time_str_with_z] = String.split(datetime, "T")
+  time_str = String.replace(time_str_with_z , "Z","") |> String.split(".") |> hd()
+  [year,mounth , day] = date_str |> String.split("-") |> Enum.map(&String.to_integer/1)
+  [hour ,minute,secound] = time_str |> String.split(":") |> Enum.map(&String.to_integer/1)
+  {{year,mounth,day},{hour,minute,secound}}
+  end
+end
+
+data = File.read!("/home/paranoidppl/Studia/Semestr4/Erlang-Elixir-Course/AirlyData-ALL-50k.csv")
+|> String.trim()
+|> String.split("\n")
+|>Enum.map(&Parse.parseline/1)
+
+unique_stations = Parse.identify_stations(data)
+
+
+```
+
+```elixir
+defmodule Pars do
+  def parseline (linestring) do
+    [datetime, type, val, id, name, coords] = linestring |> String.split(";")
+
+    {date,time} = parse_datetime(datetime)
+    %{:name => name,
+      :val => val |> String.to_float(),
+      :id => String.to_integer(id),
+      :coords => coords
+                 |> String.split(",")
+                 |> Enum.map(&String.to_float()/1)
+                 |> List.to_tuple(),
+      :type => type,
+      :date => date,
+      :time => time
+    }
+  end
+
+  def get_data() do
+    data = File.read!("lib/data/pollution_50k.csv/AirlyData-ALL-50k.csv")
+           |> String.trim()
+           |> String.split("\n")
+           |>Enum.map(&Pars.parseline/1)
+
+    return unique_stations = Pars.identify_stations(data)
+  end
+
+  defp identify_stations (data) do
+    Enum.uniq_by(data, & &1.id)
+  end
+
+  defp parse_datetime(datetime) do
+    [date_str , time_str_with_z] = String.split(datetime, "T")
+    time_str = String.replace(time_str_with_z , "Z","") |> String.split(".") |> hd()
+    [year,mounth , day] = date_str |> String.split("-") |> Enum.map(&String.to_integer/1)
+    [hour ,minute,secound] = time_str |> String.split(":") |> Enum.map(&String.to_integer/1)
+    {date,time} = {{year,mounth,day},{hour,minute,secound}}
+  end
+end
+
+
+data = File.read!("lib/data/pollution_50k.csv/AirlyData-ALL-50k.csv")
+           |> String.trim()
+           |> String.split("\n")
+           |>Enum.map(&Pars.parseline/1)
+
+unique_stations = Pars.identify_stations(data)
+
+
+
+
+
+```
